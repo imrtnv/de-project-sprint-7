@@ -19,15 +19,13 @@ import sys
 
 
 def main():
-    try: 
+    # задаем все переменные далее по коду они будут обозначены где они используются
+    sname = sys.argv[1] #"imrtnv" 
+    hdfs_path = sys.argv[2] #"hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020"
+    geo_path = sys.argv[3]  #"/user/master/data/geo/events/"
+    citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
 
-        # задаем все переменные далее по коду они будут обозначены где они используются
-        sname = sys.argv[1] #"imrtnv" 
-        hdfs_path = sys.argv[2] #"hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020"
-        geo_path = sys.argv[3]  #"/user/master/data/geo/events/"
-        citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
-
-        spark = (
+    spark = (
                 SparkSession
                 .builder
                 .master('yarn')
@@ -41,15 +39,15 @@ def main():
         #geo_path = "/user/master/data/geo/events/"
         #sname = "imrtnv"
 
-        events = spark.read\
-                    .option("basePath", f"{hdfs_path}{geo_path}")\
-                    .parquet(f"{hdfs_path}{geo_path}")\
+    events = spark.read\
+                .option("basePath", f"{hdfs_path}{geo_path}")\
+                .parquet(f"{hdfs_path}{geo_path}")\
 
         #Save in parquet and partition by "date", "event_type" for easy read work with df
-        events.write \
-                .partitionBy("date", "event_type") \
-                .mode("overwrite") \
-                .parquet(f"{hdfs_path}/user/{sname}/data/events")
+    events.write \
+            .partitionBy("date", "event_type") \
+            .mode("overwrite") \
+            .parquet(f"{hdfs_path}/user/{sname}/data/events")
 
 
 

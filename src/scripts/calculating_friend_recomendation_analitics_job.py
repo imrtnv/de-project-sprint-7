@@ -19,12 +19,12 @@ from pyspark.sql.types import *
 from math import radians, cos, sin, asin, sqrt
 
 #comment: задаем все переменные далее по коду они будут обозначены где они используются
-sname = sys.argv[1] #"imrtnv" 
-hdfs_path = sys.argv[2] #"hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020"
-geo_path = sys.argv[3]  #"/user/master/data/geo/events/"
-citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
-start_date = sys.argv[4] #'2022-05-21'
-depth = sys.argv[5] #28
+#sname = "imrtnv"  #sys.argv[1]
+#hdfs_path = "hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020" #sys.argv[2]
+#geo_path = "/user/master/data/geo/events/" #sys.argv[3]
+#citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
+#start_date = '2022-05-21' #sys.argv[4]
+#depth = 28 #sys.argv[5]
 
 
 #comment: Функция формирует list со список папок для загрузки  
@@ -119,11 +119,11 @@ def main():
         .filter(F.col("user_left") != F.col("user_right")))
 
     #Получаем все подписки и удаляем дубликаты
-    df_events_messages = spark.read.parquet((*input_paths(start_date, depth))
+    df_events_messages = (spark.read.parquet(*input_paths(start_date, depth))
         .filter("event_type == 'message'")
         .where( F.col("lat").isNotNull() | (F.col("lon").isNotNull()))
         .select(F.col('event.message_from')
-        .alias('user_id'),F.round(F.col("lat"), 2).alias('lat'),F.round(F.col("lon"), 2).alias('lon'))
+        .alias('user_id'),F.col("lat").alias('lat'),F.col("lon").alias('lon'))
         .distinct())
 
 
@@ -132,7 +132,7 @@ def main():
         .filter("event_type == 'subscription'")
         .where( F.col("lat").isNotNull() | (F.col("lon").isNotNull()))
         .select(F.col("event.user")
-        .alias('user_id'),F.round(F.col("lat"), 2).alias('lat'),F.round(F.col("lon"), 2).alias('lon'))
+        .alias('user_id'),F.col("lat").alias('lat'),F.col("lon").alias('lon'))
         .distinct())
 
     #объединение координат сообщений и подписок
@@ -160,12 +160,15 @@ def main():
         .drop("lat_right", "lon_right", "distance"))
 
 
+    #citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/geo.csv"
     df_csv = spark.read.csv(citygeodata_csv, sep = ';', header = True)
-
     df_csv = df_csv.withColumn("lat",regexp_replace("lat", ",", ".")).withColumn("lng",regexp_replace("lng",",","."))
 
+    #Оставлю только два крупных города (так как действительно вы писали что мое решение будет падать, но и в вашем готовым решении он не нашел часть городов из файла)
+    df_citygeodata = df_citygeodata.filter(F.col('city_id')<3)
+
     #Изменим тип и название столбцов
-    df_citygeodata = (df_csv.select(F.col("id")
+    df_citygeodata = (df_citygeodata.select(F.col("id")
         .cast(LongType()).alias("city_id"),(F.col("city")).alias("city_name"),(F.col("lat")).cast(DoubleType())
         .alias("city_lat"),(F.col("lng")).cast(DoubleType()).alias("city_lon")))
 

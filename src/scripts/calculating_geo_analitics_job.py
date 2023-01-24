@@ -18,12 +18,13 @@ from pyspark.sql.window import Window
 from pyspark.sql.types import *
 from math import radians, cos, sin, asin, sqrt
 
-sname = sys.argv[1] #"imrtnv" 
-hdfs_path = sys.argv[2] #"hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020"
-geo_path = sys.argv[3]  #"/user/master/data/geo/events/"
-citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
-start_date = sys.argv[4] #'2022-05-21'
-depth = sys.argv[5] #28
+#comment: задаем все переменные далее по коду они будут обозначены где они используются
+#sname = "imrtnv"  #sys.argv[1]
+#hdfs_path = "hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020" #sys.argv[2]
+#geo_path = "/user/master/data/geo/events/" #sys.argv[3]
+#citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
+#start_date = '2022-05-21' #sys.argv[4]
+#depth = 28 #sys.argv[5]
 
 
 #Функция формирует list со список папок для загрузки  
@@ -66,24 +67,24 @@ def main():
             .getOrCreate()
         )
 
-    #Сохраняем вы события message с заполненными координатами
+    #Сохраняем все события message с заполненными координатами
     df_all_message = (spark.read.parquet(*input_paths(start_date, depth)).filter("event_type == 'message'")
-        .where(F.col("lat").isNotNull() | (F.col("lon").isNotNull()))
+        .where(F.col("lat").isNotNull() & (F.col("lon").isNotNull()))
         .select(F.col('event.message_from').alias('user_id')
             ,F.col('event.message_id').alias('message_id')
             ,'lat','lon',F.to_date(F.coalesce(F.col('event.datetime'),F.col('event.message_ts')))
             .alias("date")))
 
-    #Сохраняем вы события reaction с заполненными координатами
+    #Сохраняем все события reaction с заполненными координатами
     df_all_reaction = (spark.read.parquet(*input_paths(start_date, depth)).filter("event_type == 'reaction'")
-        .where(F.col("lat").isNotNull() | (F.col("lon").isNotNull()))
+        .where(F.col("lat").isNotNull() & (F.col("lon").isNotNull()))
         .select(F.col('event.message_id').alias('message_id')
         ,'lat','lon',F.to_date(F.coalesce(F.col('event.datetime'),F.col('event.message_ts')))
         .alias("date")))
 
-    #Сохраняем вы события subscription с заполненными координатами
+    #Сохраняем все события subscription с заполненными координатами
     df_all_subscription = (spark.read.parquet(*input_paths(start_date, depth)).filter("event_type == 'subscription'")
-        .where(F.col("lat").isNotNull() | (F.col("lon").isNotNull()))
+        .where(F.col("lat").isNotNull() & (F.col("lon").isNotNull()))
         .select(F.col('event.user').alias('user')
         ,'lat','lon',F.to_date(F.coalesce(F.col('event.datetime'),F.col('event.message_ts')))
         .alias("date")))
@@ -148,7 +149,7 @@ def main():
             "message_id", "date", "city_id", "city_name")
         .withColumnRenamed("city_id", "zone_id"))
 
-    # получение ближайшего города
+    #получение ближайшего города
     df_city_subscription = (
         df_distance_subscription
         .withColumn("row" ,F.row_number().over(
@@ -176,9 +177,7 @@ def main():
                     (
                         F.count("message_id").over(
                             Window.partitionBy("zone_id", "month"))))
-        .groupBy("zone_id", "week", "month", "week_message", "month_message").agg(F.max("month_message").alias("max"))
-        .drop("max")
-        .withColumn("hash", F.hash(F.concat(F.col('zone_id'),F.col('week'),F.col('month')))))
+        .select("zone_id", "week", "month", "week_message", "month_message").distinct())
 
     #zone_id — идентификатор зоны (города);
     #week — неделя расчёта;
@@ -203,9 +202,7 @@ def main():
                     (
                         F.count("row").over(
                             Window.partitionBy("zone_id", "month"))))
-        .groupBy("zone_id", "week", "month", "week_user", "month_user").agg(F.max("week_user").alias("max"))
-        .drop("max")
-        .withColumn("hash", F.hash(F.concat(F.col('zone_id'),F.col('week'),F.col('month')))))
+        .select("zone_id", "week", "month", "week_user", "month_user").distinct())
     
     #zone_id — идентификатор зоны (города);
     #week — неделя расчёта;
@@ -224,9 +221,7 @@ def main():
                     (
                         F.count("message_id").over(
                             Window.partitionBy("zone_id", "month"))))
-        .groupBy("zone_id", "week", "month", "week_reaction", "month_reaction").agg(F.max("month_reaction").alias("max"))
-        .drop("max")
-        .withColumn("hash", F.hash(F.concat(F.col('zone_id'),F.col('week'),F.col('month')))))
+        .select("zone_id", "week", "month", "week_reaction", "month_reaction").distinct())
     
     #zone_id — идентификатор зоны (города);
     #week — неделя расчёта;
@@ -246,9 +241,7 @@ def main():
                     (
                         F.count("user").over(
                             Window.partitionBy("zone_id", "month"))))
-        .groupBy("zone_id", "week", "month", "week_subscription", "month_subscription").agg(F.max("month_subscription").alias("max"))
-        .drop("max")
-        .withColumn("hash", F.hash(F.concat(F.col('zone_id'),F.col('week'),F.col('month')))))
+        .select("zone_id", "week", "month", "week_subscription", "month_subscription").distinct())
 
     #объединения всех метрик в одину ветрину
     #df_count_message
@@ -256,12 +249,9 @@ def main():
     #df_count_reaction
     #df_count_subscription
     df_geo_analitics_mart = (
-        df_count_message
-        .join(df_count_reg.select("week_user", "month_user", "hash"), on=["hash"], how='left')
-        .join(df_count_reaction.select("week_reaction", "month_reaction", "hash"), on=["hash"], how='left')
-        .join(df_count_subscription.select("week_subscription", "month_subscription", "hash"), on=["hash"], how='left')
-        .drop("hash")
-
+        df_count_message.join(df_count_reg, ['zone_id','week','month'],how = 'left')
+        .join(df_count_reaction, ['zone_id','week','month'], how='left')
+        .join(df_count_subscription, ['zone_id','week','month'], how='left')
     )
 
     #Сохранение витрины для аналитиков на hdfs 

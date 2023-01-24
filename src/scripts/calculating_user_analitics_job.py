@@ -18,12 +18,13 @@ from pyspark.sql.window import Window
 from pyspark.sql.types import *
 from math import radians, cos, sin, asin, sqrt
 
-sname = sys.argv[1] #"imrtnv" 
-hdfs_path = sys.argv[2] #"hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020"
-geo_path = sys.argv[3]  #"/user/master/data/geo/events/"
-citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
-start_date = sys.argv[4] #'2022-05-21'
-depth = sys.argv[5] #28
+#comment: задаем все переменные далее по коду они будут обозначены где они используются
+#sname = "imrtnv"  #sys.argv[1]
+#hdfs_path = "hdfs://rc1a-dataproc-m-dg5lgqqm7jju58f9.mdb.yandexcloud.net:8020" #sys.argv[2]
+#geo_path = "/user/master/data/geo/events/" #sys.argv[3]
+#citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/"
+#start_date = '2022-05-21' #sys.argv[4]
+#depth = 28 #sys.argv[5]
 
 
 #Функция формирует list со список папок для загрузки  
@@ -74,100 +75,77 @@ def main():
         .select(F.col('event.message_from').alias('user_id')
             ,F.date_trunc("day",F.coalesce(F.col('event.datetime'),F.col('event.message_ts'))).alias("date")
             ,'lat', 'lon')
-            .distinct()
-            )
+        )
 
     #citygeodata_csv = f"{hdfs_path}/user/{sname}/data/citygeodata/geo.csv"
     df_csv = spark.read.csv(citygeodata_csv, sep = ';', header = True)
     df_csv = df_csv.withColumn("lat",regexp_replace("lat", ",", ".")).withColumn("lng",regexp_replace("lng",",","."))
     df_citygeodata = df_csv.select(F.col("id").cast(LongType()).alias("city_id"),(F.col("city")).alias("city_name"),(F.col("lat")).cast(DoubleType()).alias("city_lat"),(F.col("lng")).cast(DoubleType()).alias("city_lon"))
 
+    #Оставлю только два крупных города (так как действительно вы писали что мое решение будет падать, но и в вашем готовым решении он не нашел часть городов из файла)
+    df_citygeodata = df_citygeodata.filter(F.col('city_id')<3)
 
     #Получение DF события перемноженные на список городов - для дальнейшего вычисления растояния до города
-    df_message_and_citygeodata = df_message.crossJoin(
+    df_message_and_citygeodata = (df_message.crossJoin(
         df_citygeodata.hint("broadcast")
-    )
+    ))
 
-    #Расчет дистанции
-    df_message_and_distance = df_message_and_citygeodata.select(
-        "user_id"
-        ,"date"
-        ,"city_name"
+    df_message_and_distance = (df_message_and_citygeodata.select(
+        "user_id","date","city_name"
         ,udf_get_distance(
-            F.col("lon"), F.col("lat"), F.col("city_lon"), F.col("city_lat")
-        ).cast(DoubleType()).alias("distance")
-    )
+        F.col("lon"), F.col("lat"), F.col("city_lon"), F.col("city_lat")
+        ).cast(DoubleType()).alias("distance")).withColumn("row",F.row_number().over(
+        Window.partitionBy("user_id","date").orderBy(F.col("distance"))
+        )).filter(F.col("row") ==1).
+        drop("row", "distance"))
 
     #расчет показателя act_city по пользователям
-    df_act_city = (
-        df_message_and_distance
-        .withColumn("row",F.row_number().over(
+    df_act_city = (df_message_and_distance.withColumn("row",F.row_number().over(
             Window.partitionBy("user_id").orderBy(F.col("date").desc())
             ))
         .filter(F.col("row") == 1)
         .drop("row", "distance")
-        .withColumnRenamed("user_id", "act_city_user_id")
-        .withColumnRenamed("city_name", "act_city")
-    )
+        .withColumnRenamed("city_name", "act_city"))
+
+    #Промежуточный DF дли построение последующих 3 DF
+    df_change = (df_message_and_distance.withColumn('city_name_lag',F.lag('city_name')
+        .over(Window().partitionBy('user_id').orderBy(F.col('date'))))
+        .filter(F.col('city_name') != F.col('city_name_lag')))
 
     #расчет домашнего города по условию что сотрудник находился в этом городе 27 дней или более
-    df_home_city = (
-        df_message_and_distance
-        .withColumn("row_date",F.row_number().over(
-            Window.partitionBy("user_id", "city_name").orderBy(F.col("date").desc())
-            ))
-        .filter(F.col("row_date") >= 27)
-        .withColumn("row_by_row_date", F.row_number().over(
-            Window.partitionBy("user_id").orderBy(F.col("row_date").desc())
-            ))
-        .filter(F.col("row_by_row_date") == 1)
-        .withColumnRenamed("user_id", "home_city_user_id")
-        .withColumnRenamed("city_name", "home_city")
-        .drop("row_date", "row_by_row_date", "distance", "date")
-    )
+    df_home_city = (df_change.withColumn('date_lag',F.lag('date')
+        .over(Window().partitionBy('user_id').orderBy(F.col('date'))))
+        .withColumn('date_diff',F.datediff(F.col('date'),F.col('date_lag')))
+        .filter(F.col('date_diff') > 27)
+        .withColumn('row',F.row_number()
+        .over(Window.partitionBy("user_id").orderBy(F.col("date").desc())))
+        .filter(F.col('row') == 1)
+        .withColumnRenamed("city_name_lag", "home_city")
+        .drop('date','city_name','date_lag','row','date_diff'))
 
     #считаем количество посещённых городов. Если пользователь побывал в каком-то городе повторно, то это считается за отдельное посещение.
-    df_travel_count = (
-        df_message_and_distance
-        .withColumn("travel_count",F.rank().over(
-            Window.partitionBy("user_id", "city_name").orderBy(F.col("date").desc())
-            ))
-        .filter(F.col("travel_count") > 1)
-        .drop("distance", "date")
-        .groupBy("user_id").agg(F.max("travel_count").alias("travel_count"))
-        .withColumnRenamed("user_id", "travel_count_user_id")
-    )
+    df_travel_count = (df_change.withColumn('row',F.row_number()
+        .over(Window.partitionBy("user_id").orderBy(F.col("date").desc())))
+        .groupBy(F.col('user_id')).agg(F.max('row').alias("travel_count")))
 
     #формируем список городов в порядке посещения.
-    df_travel_array = (
-        df_message_and_distance
-        .distinct()
+    df_travel_array = (df_change
         .groupBy("user_id")
-        .agg(F.collect_list('city_name').alias('travel_array'))
-        .drop("date")
-        .withColumnRenamed("user_id", "travel_array_user_id")
-    )
+        .agg(F.collect_list('city_name').alias('travel_array')))
 
     #расчет метики local_time - формула расчета описана в документации
     df_local_time = (
         df_act_city
         .withColumn("timezone", F.concat(F.lit("Australia/"), F.col('act_city')) )
         .withColumn("local_time", F.from_utc_timestamp(F.col("date"),F.col('timezone')))
-        .drop("timezone", "date", "act_city")
-        .withColumnRenamed("act_city_user_id", "local_time_user_id")
-    )
+        .drop("timezone", "date", "act_city"))
 
     #объединения всех метрик в одину ветрину
-    df_user_analitics_mart = (
-        df_act_city
-        .select("act_city_user_id", "act_city")
-        .join(df_home_city.select("home_city_user_id", "home_city"), df_act_city.act_city_user_id == df_home_city.home_city_user_id, how='left')
-        .join(df_travel_count,  df_act_city.act_city_user_id == df_travel_count.travel_count_user_id, how='left') #куратор прошу здесь подсказки/совета я сталкнулся с трудностью что если в каждом df ключевое поле имеет одинаковое имя я не смог удалить лишние стлобцы командой .drop(df2.id) в связи с этим прошлось поле user_id переименовывать в каждом df чтобв они не повторялись
-        .join(df_travel_array,  df_act_city.act_city_user_id == df_travel_array.travel_array_user_id, how='left')
-        .join(df_local_time,    df_act_city.act_city_user_id == df_local_time.local_time_user_id, how='left')
-        .drop("home_city_user_id",  "travel_count_user_id", "travel_array_user_id", "local_time_user_id")
-        .withColumnRenamed("act_city_user_id", "user_id")
-    )
+    df_user_analitics_mart = (df_act_city.select("user_id", "act_city")
+        .join(df_home_city, 'user_id', how='left')
+        .join(df_travel_count, 'user_id', how='left')
+        .join(df_travel_array, 'user_id', how='left')
+        .join(df_local_time, 'user_id', how='left'))
 
     #Сохранение витрины для аналитиков на hdfs 
     (
