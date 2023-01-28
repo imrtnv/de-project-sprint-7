@@ -108,25 +108,24 @@ def main():
         .withColumnRenamed("city_name", "act_city"))
 
     #Промежуточный DF дли построение последующих 3 DF
-    df_change = (df_message_and_distance.withColumn('city_name_lag',F.lag('city_name')
-        .over(Window().partitionBy('user_id').orderBy(F.col('date'))))
-        .filter(F.col('city_name') != F.col('city_name_lag')))
+    df_change = (df_message_and_distance.withColumn('max_date',F.max('date')
+        .over(Window().partitionBy('user_id')))
+        .withColumn('city_name_lag_1_desc',F.lag('city_name',-1,'start')
+        .over(Window().partitionBy('user_id').orderBy(F.col('date').desc())))
+        .filter(F.col('city_name') != F.col('city_name_lag_1_desc')))
 
     #расчет домашнего города по условию что сотрудник находился в этом городе 27 дней или более
-    df_home_city = (df_change.withColumn('date_lag',F.lag('date')
-        .over(Window().partitionBy('user_id').orderBy(F.col('date'))))
-        .withColumn('date_diff',F.datediff(F.col('date'),F.col('date_lag')))
+    df_home_city = (df_change.withColumn('date_lag',F.coalesce(F.lag('date')
+        .over(Window().partitionBy('user_id').orderBy(F.col('date').desc())),F.col('max_date')))
+        .withColumn('date_diff',F.datediff(F.col('date_lag'),F.col('date')))
         .filter(F.col('date_diff') > 27)
         .withColumn('row',F.row_number()
         .over(Window.partitionBy("user_id").orderBy(F.col("date").desc())))
         .filter(F.col('row') == 1)
-        .withColumnRenamed("city_name_lag", "home_city")
-        .drop('date','city_name','date_lag','row','date_diff'))
+        .drop('date','city_name_lag_1_desc','date_lag','row','date_diff','max_date'))
 
     #считаем количество посещённых городов. Если пользователь побывал в каком-то городе повторно, то это считается за отдельное посещение.
-    df_travel_count = (df_change.withColumn('row',F.row_number()
-        .over(Window.partitionBy("user_id").orderBy(F.col("date").desc())))
-        .groupBy(F.col('user_id')).agg(F.max('row').alias("travel_count")))
+    df_travel_count = (df_change.groupBy("user_id").count().withColumnRenamed("count", "travel_count"))
 
     #формируем список городов в порядке посещения.
     df_travel_array = (df_change
